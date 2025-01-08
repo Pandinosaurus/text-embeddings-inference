@@ -18,16 +18,16 @@ export const options = {
     scenarios: {
         // throughput: {
         //     executor: 'shared-iterations',
-        //     vus: 1000,
-        //     iterations: 1000,
+        //     vus: 5000,
+        //     iterations: 5000,
         //     maxDuration: '2m',
         //     gracefulStop: '1s',
         // },
         load_test: {
             executor: 'constant-arrival-rate',
             duration: '30s',
-            preAllocatedVUs: 10000,
-            rate: 9000,
+            preAllocatedVUs: 5000,
+            rate: 50,
             timeUnit: '1s',
             gracefulStop: '1s',
         },
@@ -37,11 +37,13 @@ export const options = {
 export default function () {
     const payload = JSON.stringify({
         inputs: inputs,
+        // query: inputs,
+        // texts: [inputs],
         truncate: true,
     });
 
     const headers = {'Content-Type': 'application/json'};
-    const res = http.post(`http://${host}/embed`, payload, {
+    const res = http.post(`http://${host}/`, payload, {
         headers, timeout: '20m'
     });
 
@@ -54,5 +56,7 @@ export default function () {
         tokenizationTIme.add(res.headers["X-Tokenization-Time"]);
         queueTime.add(res.headers["X-Queue-Time"]);
         inferenceTime.add(res.headers["X-Inference-Time"]);
+    } else {
+        console.log(res.error);
     }
 }

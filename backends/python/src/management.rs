@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use std::{env, fs, io, thread};
-use text_embeddings_backend_core::BackendError;
+use text_embeddings_backend_core::{BackendError, Pool};
 
 #[derive(Debug)]
 pub(crate) struct BackendProcess {
@@ -21,6 +21,8 @@ impl BackendProcess {
         dtype: String,
         uds_path: &str,
         otlp_endpoint: Option<String>,
+        otlp_service_name: String,
+        pool: Pool,
     ) -> Result<Self, BackendError> {
         // Get UDS path
         let uds = Path::new(uds_path);
@@ -30,23 +32,37 @@ impl BackendProcess {
             fs::remove_file(uds).expect("could not remove UDS file");
         }
 
+        let pool = match pool {
+            Pool::Cls => "cls",
+            Pool::Mean => "mean",
+            Pool::LastToken => "lasttoken",
+            Pool::Splade => {
+                return Err(BackendError::Start(format!("{pool:?} is not supported")));
+            }
+        };
+
         // Process args
         let mut python_server_args = vec![
             model_path,
-            "--dtype".to_string(),
+            "--dtype".to_owned(),
             dtype,
-            "--uds-path".to_string(),
-            uds_path.to_string(),
-            "--logger-level".to_string(),
-            "INFO".to_string(),
-            "--json-output".to_string(),
+            "--uds-path".to_owned(),
+            uds_path.to_owned(),
+            "--logger-level".to_owned(),
+            "INFO".to_owned(),
+            "--json-output".to_owned(),
+            "--pool".to_owned(),
+            pool.to_owned(),
         ];
 
         // OpenTelemetry
         if let Some(otlp_endpoint) = otlp_endpoint {
-            python_server_args.push("--otlp-endpoint".to_string());
+            python_server_args.push("--otlp-endpoint".to_owned());
             python_server_args.push(otlp_endpoint);
         }
+
+        python_server_args.push("--otlp-service-name".to_owned());
+        python_server_args.push(otlp_service_name);
 
         // Copy current process env
         let envs: Vec<(OsString, OsString)> = env::vars_os().collect();
@@ -64,7 +80,7 @@ impl BackendProcess {
             Err(err) => {
                 if err.kind() == io::ErrorKind::NotFound {
                     return Err(BackendError::Start(
-                        "python-text-embeddings-server not found in PATH".to_string(),
+                        "python-text-embeddings-server not found in PATH".to_owned(),
                     ));
                 }
                 return Err(BackendError::Start(err.to_string()));
@@ -89,7 +105,7 @@ impl BackendProcess {
                 // We read stderr in another thread as it seems that lines() can block in some cases
                 let (err_sender, err_receiver) = mpsc::channel();
                 thread::spawn(move || {
-                    for line in stderr_reader.lines().flatten() {
+                    for line in stderr_reader.lines().map_while(Result::ok) {
                         err_sender.send(line).unwrap_or(());
                     }
                 });

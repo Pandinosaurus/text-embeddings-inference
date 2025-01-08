@@ -1,21 +1,26 @@
+use anyhow::Context;
+use candle::cuda_backend::cudarc::driver;
 use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::{
     CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
 };
 use candle::cuda_backend::cudarc::driver::CudaDevice;
-use lazy_static::lazy_static;
 
-lazy_static! {
-    pub static ref RUNTIME_COMPUTE_CAP: usize = {
-        let device = CudaDevice::new(0).expect("cuda is not available");
-        let major = device
-            .attribute(CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
-            .unwrap();
-        let minor = device
-            .attribute(CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)
-            .unwrap();
-        (major * 10 + minor) as usize
-    };
-    pub static ref COMPILE_COMPUTE_CAP: usize = env!("CUDA_COMPUTE_CAP").parse::<usize>().unwrap();
+pub fn get_compile_compute_cap() -> Result<usize, anyhow::Error> {
+    env!("CUDA_COMPUTE_CAP")
+        .parse::<usize>()
+        .context("Could not retrieve compile time CUDA_COMPUTE_CAP")
+}
+
+pub fn get_runtime_compute_cap() -> Result<usize, anyhow::Error> {
+    driver::result::init().context("CUDA is not available")?;
+    let device = CudaDevice::new(0).context("CUDA is not available")?;
+    let major = device
+        .attribute(CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
+        .context("Could not retrieve device compute capability major")?;
+    let minor = device
+        .attribute(CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)
+        .context("Could not retrieve device compute capability minor")?;
+    Ok((major * 10 + minor) as usize)
 }
 
 fn compute_cap_matching(runtime_compute_cap: usize, compile_compute_cap: usize) -> bool {
@@ -29,10 +34,13 @@ fn compute_cap_matching(runtime_compute_cap: usize, compile_compute_cap: usize) 
     }
 }
 
-pub fn incompatible_compute_cap() -> bool {
-    let compile_compute_cap = *COMPILE_COMPUTE_CAP;
-    let runtime_compute_cap = *RUNTIME_COMPUTE_CAP;
-    !compute_cap_matching(runtime_compute_cap, compile_compute_cap)
+pub fn compatible_compute_cap() -> Result<bool, anyhow::Error> {
+    let compile_compute_cap = get_compile_compute_cap()?;
+    let runtime_compute_cap = get_runtime_compute_cap()?;
+    Ok(compute_cap_matching(
+        runtime_compute_cap,
+        compile_compute_cap,
+    ))
 }
 
 #[cfg(test)]

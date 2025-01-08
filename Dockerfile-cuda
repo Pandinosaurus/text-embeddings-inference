@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.0.0-devel-ubuntu22.04 AS base-builder
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS base-builder
 
 ENV SCCACHE=0.5.4
 ENV RUSTC_WRAPPER=/usr/local/bin/sccache
@@ -35,6 +35,11 @@ ARG CUDA_COMPUTE_CAP=80
 ARG GIT_SHA
 ARG DOCKER_LABEL
 
+# Limit parallelism
+ARG RAYON_NUM_THREADS
+ARG CARGO_BUILD_JOBS
+ARG CARGO_BUILD_INCREMENTAL
+
 # sccache specific variables
 ARG ACTIONS_CACHE_URL
 ARG ACTIONS_RUNTIME_TOKEN
@@ -70,14 +75,37 @@ COPY router router
 COPY Cargo.toml ./
 COPY Cargo.lock ./
 
+FROM builder AS http-builder
+
 RUN if [ ${CUDA_COMPUTE_CAP} -ge 75 -a ${CUDA_COMPUTE_CAP} -lt 80 ]; \
     then \
-        cargo build --release --bin text-embeddings-router -F candle-cuda-turing -F static-linking --no-default-features && sccache -s; \
+        cargo build --release --bin text-embeddings-router -F candle-cuda-turing -F static-linking -F http --no-default-features && sccache -s; \
     else \
-        cargo build --release --bin text-embeddings-router -F candle-cuda -F static-linking --no-default-features && sccache -s; \
+        cargo build --release --bin text-embeddings-router -F candle-cuda -F static-linking -F http --no-default-features && sccache -s; \
     fi;
 
-FROM nvidia/cuda:12.0.0-base-ubuntu22.04
+FROM builder AS grpc-builder
+
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN PROTOC_ZIP=protoc-21.12-linux-x86_64.zip && \
+    curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v21.12/$PROTOC_ZIP && \
+    unzip -o $PROTOC_ZIP -d /usr/local bin/protoc && \
+    unzip -o $PROTOC_ZIP -d /usr/local 'include/*' && \
+    rm -f $PROTOC_ZIP
+
+COPY proto proto
+
+RUN if [ ${CUDA_COMPUTE_CAP} -ge 75 -a ${CUDA_COMPUTE_CAP} -lt 80 ]; \
+    then \
+        cargo build --release --bin text-embeddings-router -F candle-cuda-turing -F static-linking -F grpc --no-default-features && sccache -s; \
+    else \
+        cargo build --release --bin text-embeddings-router -F candle-cuda -F static-linking -F grpc --no-default-features && sccache -s; \
+    fi;
+
+FROM nvidia/cuda:12.2.0-base-ubuntu22.04 AS base
 
 ARG DEFAULT_USE_FLASH_ATTENTION=True
 
@@ -85,7 +113,22 @@ ENV HUGGINGFACE_HUB_CACHE=/data \
     PORT=80 \
     USE_FLASH_ATTENTION=$DEFAULT_USE_FLASH_ATTENTION
 
-COPY --from=builder /usr/src/target/release/text-embeddings-router /usr/local/bin/text-embeddings-router
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM base AS grpc
+
+COPY --from=grpc-builder /usr/src/target/release/text-embeddings-router /usr/local/bin/text-embeddings-router
+
+ENTRYPOINT ["text-embeddings-router"]
+CMD ["--json-output"]
+
+FROM base
+
+COPY --from=http-builder /usr/src/target/release/text-embeddings-router /usr/local/bin/text-embeddings-router
 
 ENTRYPOINT ["text-embeddings-router"]
 CMD ["--json-output"]

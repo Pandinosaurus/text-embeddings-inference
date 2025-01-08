@@ -23,6 +23,8 @@ def serve(
     logger_level: str = "INFO",
     json_output: bool = False,
     otlp_endpoint: Optional[str] = None,
+    otlp_service_name: str = "text-embeddings-inference.server",
+    pool: str = "cls",
 ):
     # Remove default handler
     logger.remove()
@@ -42,12 +44,11 @@ def serve(
 
     # Setup OpenTelemetry distributed tracing
     if otlp_endpoint is not None:
-        setup_tracing(otlp_endpoint=otlp_endpoint)
+        setup_tracing(otlp_endpoint=otlp_endpoint, otlp_service_name=otlp_service_name)
 
     # Downgrade enum into str for easier management later on
     dtype = None if dtype is None else dtype.value
-
-    server.serve(model_path, dtype, uds_path)
+    server.serve(model_path, dtype, uds_path, pool)
 
 
 if __name__ == "__main__":

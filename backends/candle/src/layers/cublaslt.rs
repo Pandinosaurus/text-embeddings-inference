@@ -1,28 +1,40 @@
 use crate::layers::HiddenAct;
 use candle::{Device, Result, Tensor};
-use lazy_static::lazy_static;
+use std::sync::Once;
 
 #[cfg(feature = "cuda")]
 use candle_cublaslt::{fused_batch_matmul, fused_matmul, Activation, CublasLt};
 
-lazy_static! {
-    pub static ref CUBLASLT: Option<CublasLtWrapper> = {
-        match Device::cuda_if_available(0) {
-            Ok(device) => {
-                #[cfg(feature = "cuda")]
-                {
-                    Some(CublasLtWrapper {
-                        cublaslt: CublasLt::new(&device).unwrap(),
-                    })
-                }
-                #[cfg(not(feature = "cuda"))]
-                {
-                    None
-                }
+static INIT: Once = Once::new();
+static mut CUBLASLT: Option<CublasLtWrapper> = None;
+
+pub fn get_cublas_lt_wrapper() -> Option<&'static CublasLtWrapper> {
+    unsafe {
+        INIT.call_once(|| {
+            #[cfg(not(feature = "cuda"))]
+            {
+                CUBLASLT = None;
             }
-            Err(_) => None,
-        }
-    };
+
+            #[cfg(feature = "cuda")]
+            {
+                // Check if we can call the driver
+                // Then check if we can create a device
+                // Then check that the device is CUDA
+                use candle::cuda_backend::cudarc::driver;
+                CUBLASLT = driver::result::init()
+                    .ok()
+                    .and_then(|_| Device::cuda_if_available(0).ok())
+                    .and_then(|device| match device {
+                        Device::Cuda(_) => Some(CublasLtWrapper {
+                            cublaslt: CublasLt::new(&device).unwrap(),
+                        }),
+                        _ => None,
+                    });
+            }
+        });
+        CUBLASLT.as_ref()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -45,21 +57,27 @@ impl CublasLtWrapper {
     ) -> Result<Tensor> {
         #[cfg(feature = "cuda")]
         {
-            let act = act.clone().map(|a| match a {
-                HiddenAct::Gelu => Activation::Gelu,
-                HiddenAct::Relu => Activation::Relu,
-            });
+            let inner_act = match act {
+                Some(HiddenAct::Gelu) => Some(Activation::Gelu),
+                Some(HiddenAct::Relu) => Some(Activation::Relu),
+                _ => None,
+            };
 
-            fused_matmul(
-                &a,
-                &b,
+            let mut result = fused_matmul(
+                a,
+                b,
                 out,
                 alpha,
                 beta,
                 bias,
-                act.clone(),
+                inner_act,
                 self.cublaslt.clone(),
-            )
+            )?;
+
+            if Some(HiddenAct::Swiglu) == act {
+                result = candle_nn::ops::swiglu(&result)?;
+            }
+            Ok(result)
         }
         #[cfg(not(feature = "cuda"))]
         {
@@ -80,21 +98,27 @@ impl CublasLtWrapper {
     ) -> Result<Tensor> {
         #[cfg(feature = "cuda")]
         {
-            let act = act.clone().map(|a| match a {
-                HiddenAct::Gelu => Activation::Gelu,
-                HiddenAct::Relu => Activation::Relu,
-            });
+            let inner_act = match act {
+                Some(HiddenAct::Gelu) => Some(Activation::Gelu),
+                Some(HiddenAct::Relu) => Some(Activation::Relu),
+                _ => None,
+            };
 
-            fused_batch_matmul(
-                &a,
-                &b,
+            let mut result = fused_batch_matmul(
+                a,
+                b,
                 out,
                 alpha,
                 beta,
                 bias,
-                act.clone(),
+                inner_act,
                 self.cublaslt.clone(),
-            )
+            )?;
+
+            if Some(HiddenAct::Swiglu) == act {
+                result = candle_nn::ops::swiglu(&result)?;
+            }
+            Ok(result)
         }
         #[cfg(not(feature = "cuda"))]
         {
